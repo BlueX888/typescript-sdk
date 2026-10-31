@@ -90,7 +90,9 @@ verifies('hosting:auth:missing-401', async (_args: TestArgs) => {
     const wwwAuth = res.headers.get('www-authenticate');
     expect(wwwAuth).toBeTruthy();
     expect(wwwAuth).toMatch(/^Bearer\b/i);
-    expect(wwwAuth).toContain('error="invalid_token"');
+    // No credentials were presented, so the challenge carries no error code
+    // (RFC 6750 §3.1) — resource_metadata is what remains.
+    expect(wwwAuth).not.toContain('error=');
     expect(wwwAuth).toContain(`resource_metadata="${RESOURCE_METADATA_URL}"`);
 
     const body = (await res.json()) as { error?: string };
@@ -377,7 +379,8 @@ verifies('hosting:auth:query-token-ignored', async (_args: TestArgs) => {
     const wwwAuth = queryRes.headers.get('www-authenticate');
     expect(wwwAuth).toBeTruthy();
     expect(wwwAuth).toMatch(/^Bearer\b/i);
-    expect(wwwAuth).toContain('error="invalid_token"');
+    // The request is treated as unauthenticated, so no error code either (RFC 6750 §3.1).
+    expect(wwwAuth).not.toContain('error=');
     const queryBody = (await queryRes.json()) as { error?: string };
     expect(queryBody.error).toBe('invalid_token');
 

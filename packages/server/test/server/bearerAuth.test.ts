@@ -261,6 +261,68 @@ describe('requireBearerAuth (web-standard)', () => {
     });
 });
 
+describe('requireBearerAuth challenge without credentials (RFC 6750 §3.1)', () => {
+    const resourceMetadataUrl = 'https://mcp.example/.well-known/oauth-protected-resource';
+
+    it('omits the error code while scope or resource_metadata remains', async () => {
+        const gate = requireBearerAuth({ verifier: verifierReturning(validAuthInfo), requiredScopes: ['a:read'], resourceMetadataUrl });
+        const result = await gate(new Request('https://mcp.example/mcp'));
+        const response = result as Response;
+        expect(response.status).toBe(401);
+        expect(response.headers.get('WWW-Authenticate')).toBe(`Bearer scope="a:read", resource_metadata="${resourceMetadataUrl}"`);
+
+        const scopeOnly = requireBearerAuth({ verifier: verifierReturning(validAuthInfo), requiredScopes: ['a:read'] });
+        const scopeResult = await scopeOnly(new Request('https://mcp.example/mcp'));
+        expect((scopeResult as Response).headers.get('WWW-Authenticate')).toBe('Bearer scope="a:read"');
+
+        const metadataOnly = requireBearerAuth({ verifier: verifierReturning(validAuthInfo), resourceMetadataUrl });
+        const metadataResult = await metadataOnly(new Request('https://mcp.example/mcp'));
+        expect((metadataResult as Response).headers.get('WWW-Authenticate')).toBe(`Bearer resource_metadata="${resourceMetadataUrl}"`);
+    });
+
+    it('keeps the error code when no other auth-param would remain', async () => {
+        const gate = requireBearerAuth({ verifier: verifierReturning(validAuthInfo) });
+        const result = await gate(new Request('https://mcp.example/mcp'));
+        const response = result as Response;
+        expect(response.status).toBe(401);
+        expect(response.headers.get('WWW-Authenticate')).toBe(
+            'Bearer error="invalid_token", error_description="Missing Authorization header"'
+        );
+    });
+
+    it('keeps the error code when resourceMetadataUrl is an empty string', async () => {
+        const gate = requireBearerAuth({ verifier: verifierReturning(validAuthInfo), resourceMetadataUrl: '' });
+        const result = await gate(new Request('https://mcp.example/mcp'));
+        const response = result as Response;
+        expect(response.status).toBe(401);
+        expect(response.headers.get('WWW-Authenticate')).toBe(
+            'Bearer error="invalid_token", error_description="Missing Authorization header"'
+        );
+    });
+
+    it('keeps the error code for a malformed Authorization header', async () => {
+        const gate = requireBearerAuth({ verifier: verifierReturning(validAuthInfo), requiredScopes: ['a:read'] });
+        const result = await gate(new Request('https://mcp.example/mcp', { headers: { authorization: 'Basic dXNlcjpwYXNz' } }));
+        expect((result as Response).headers.get('WWW-Authenticate')).toBe(
+            'Bearer error="invalid_token", error_description="Invalid Authorization header format, expected \'Bearer TOKEN\'", scope="a:read"'
+        );
+    });
+
+    it('keeps the error code for a presented-but-invalid token', async () => {
+        const gate = requireBearerAuth({
+            verifier: verifierThrowing(new OAuthError(OAuthErrorCode.InvalidToken, 'unknown token')),
+            requiredScopes: ['a:read'],
+            resourceMetadataUrl
+        });
+        const result = await gate(new Request('https://mcp.example/mcp', { headers: { authorization: 'Bearer nope' } }));
+        const response = result as Response;
+        expect(response.status).toBe(401);
+        expect(response.headers.get('WWW-Authenticate')).toBe(
+            `Bearer error="invalid_token", error_description="unknown token", scope="a:read", resource_metadata="${resourceMetadataUrl}"`
+        );
+    });
+});
+
 describe('hardening (review findings)', () => {
     it('returns the challenge Response instead of throwing for a non-ASCII verifier message', async () => {
         const response = bearerAuthChallengeResponse(new OAuthError(OAuthErrorCode.InvalidToken, 'token invalide \u2026'));

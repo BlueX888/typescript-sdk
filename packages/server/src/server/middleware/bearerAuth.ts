@@ -104,6 +104,17 @@ function headerQuotedValue(value: string): string {
 }
 
 /**
+ * The request presented no credentials at all, so its challenge omits the
+ * error code (RFC 6750 §3.1: a request that "lacks any authentication
+ * information" gets none) while another auth-param remains.
+ */
+class MissingCredentialsError extends OAuthError {
+    constructor() {
+        super(OAuthErrorCode.InvalidToken, 'Missing Authorization header');
+    }
+}
+
+/**
  * Build a `WWW-Authenticate: Bearer …` challenge header value (RFC 6750).
  *
  * The single formatter behind every challenge this package emits — the
@@ -111,21 +122,30 @@ function headerQuotedValue(value: string): string {
  * all challenges from one server agree on parameter order and quoting. Every
  * parameter value is emitted as an HTTP quoted-string with `\` and `"`
  * escaped and non-printable characters replaced.
+ *
+ * Pass `undefined` for `errorCode` and `description` to build the no-error
+ * challenge RFC 6750 §3.1 prescribes for a request that presented no
+ * credentials; the caller must then supply a scope or a
+ * `resourceMetadataUrl`, since §3 requires the scheme to be followed by at
+ * least one auth-param.
  */
 export function buildWwwAuthenticateHeader(
-    errorCode: string,
-    description: string,
+    errorCode: string | undefined,
+    description: string | undefined,
     requiredScopes: readonly string[],
     resourceMetadataUrl: string | undefined
 ): string {
-    let header = `Bearer error="${headerQuotedValue(errorCode)}", error_description="${headerQuotedValue(description)}"`;
+    const params: string[] = [];
+    if (errorCode !== undefined) {
+        params.push(`error="${headerQuotedValue(errorCode)}", error_description="${headerQuotedValue(description ?? '')}"`);
+    }
     if (requiredScopes.length > 0) {
-        header += `, scope="${headerQuotedValue(requiredScopes.join(' '))}"`;
+        params.push(`scope="${headerQuotedValue(requiredScopes.join(' '))}"`);
     }
     if (resourceMetadataUrl) {
-        header += `, resource_metadata="${headerQuotedValue(resourceMetadataUrl)}"`;
+        params.push(`resource_metadata="${headerQuotedValue(resourceMetadataUrl)}"`);
     }
-    return header;
+    return `Bearer ${params.join(', ')}`;
 }
 
 /**
@@ -149,7 +169,7 @@ export async function verifyBearerToken(
     const { verifier, requiredScopes = [], expectedResource } = options;
 
     if (!authorizationHeader) {
-        throw new OAuthError(OAuthErrorCode.InvalidToken, 'Missing Authorization header');
+        throw new MissingCredentialsError();
     }
 
     const [type, token] = authorizationHeader.split(' ');
@@ -199,6 +219,11 @@ export async function verifyBearerToken(
  * the Authorization Server), `500` for `server_error`, `400` for anything
  * else. A non-`OAuthError` value answers `500 server_error`. The body is the
  * OAuth error JSON.
+ *
+ * A request that presented no credentials gets its `401` challenge without
+ * the error code, per RFC 6750 §3.1 — but only while `scope` or
+ * `resource_metadata` keeps the challenge from being a bare `Bearer` (§3
+ * requires at least one auth-param).
  */
 export function bearerAuthChallengeResponse(
     error: unknown,
@@ -213,7 +238,15 @@ export function bearerAuthChallengeResponse(
 
     switch (error.code) {
         case OAuthErrorCode.InvalidToken: {
-            const challenge = buildWwwAuthenticateHeader(error.code, error.message, requiredScopes, resourceMetadataUrl);
+            // RFC 6750 §3.1: no error code when no credentials were presented, as
+            // long as another auth-param remains (§3 requires one).
+            const omitErrorCode = error instanceof MissingCredentialsError && (requiredScopes.length > 0 || resourceMetadataUrl);
+            const challenge = buildWwwAuthenticateHeader(
+                omitErrorCode ? undefined : error.code,
+                omitErrorCode ? undefined : error.message,
+                requiredScopes,
+                resourceMetadataUrl
+            );
             return Response.json(error.toResponseObject(), { status: 401, headers: { 'WWW-Authenticate': challenge } });
         }
         case OAuthErrorCode.InsufficientScope: {

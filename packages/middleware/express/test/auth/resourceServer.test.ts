@@ -52,7 +52,7 @@ describe('requireBearerAuth middleware', () => {
         expect(res.status).not.toHaveBeenCalled();
     });
 
-    it('responds 401 with WWW-Authenticate (incl. resource_metadata) when header is missing', async () => {
+    it('responds 401 with an error-less WWW-Authenticate (incl. resource_metadata) when header is missing', async () => {
         const { req, res, next } = createMockReqResNext(undefined);
         const middleware = requireBearerAuth({
             verifier: mockVerifier,
@@ -63,9 +63,7 @@ describe('requireBearerAuth middleware', () => {
         expect(res.status).toHaveBeenCalledWith(401);
         expect(res.set).toHaveBeenCalledWith(
             'WWW-Authenticate',
-            expect.stringMatching(
-                /^Bearer error="invalid_token".*resource_metadata="https:\/\/api\.example\.com\/\.well-known\/oauth-protected-resource"$/
-            )
+            'Bearer resource_metadata="https://api.example.com/.well-known/oauth-protected-resource"'
         );
         expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: 'invalid_token' }));
         expect(next).not.toHaveBeenCalled();
@@ -79,6 +77,7 @@ describe('requireBearerAuth middleware', () => {
         await middleware(req, res, next);
 
         expect(res.status).toHaveBeenCalledWith(401);
+        expect(res.set).toHaveBeenCalledWith('WWW-Authenticate', expect.stringContaining('error="invalid_token"'));
         expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: 'invalid_token', error_description: 'unknown token' }));
         expect(next).not.toHaveBeenCalled();
     });
