@@ -1,3 +1,4 @@
+import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
 import type { Context } from 'hono';
 import { Hono } from 'hono';
 import { vi } from 'vitest';
@@ -218,5 +219,62 @@ describe('@modelcontextprotocol/hono', () => {
         expect(await served.json()).toEqual({ keys: ['pad'] });
 
         expect(() => createMcpHonoApp({ maxRequestBodySize: 0 })).toThrow(RangeError);
+    });
+
+    test('createMcpHonoApp leaves bodyless methods with a JSON content type to downstream handlers', async () => {
+        const app = createMcpHonoApp();
+        const echo = (c: Context) => c.json({ parsed: c.get('parsedBody') ?? null });
+        app.get('/echo', echo);
+        app.delete('/echo', echo);
+        app.on('HEAD', '/echo', c => c.text('ok'));
+
+        for (const method of ['GET', 'DELETE']) {
+            const res = await app.request('http://localhost/echo', { method, headers: jsonHeaders });
+            expect(res.status).toBe(200);
+            expect(await res.json()).toEqual({ parsed: null });
+        }
+
+        const head = await app.request('http://localhost/echo', { method: 'HEAD', headers: jsonHeaders });
+        expect(head.status).toBe(200);
+
+        // A declared oversized body would be answered 413 if the request reached
+        // the parser; GET must skip it entirely.
+        const oversizedGet = await app.request('http://localhost/echo', {
+            method: 'GET',
+            headers: { ...jsonHeaders, 'content-length': String(4 * 1024 * 1024 + 1) }
+        });
+        expect(oversizedGet.status).toBe(200);
+    });
+
+    test('createMcpHonoApp leaves an empty JSON body unset', async () => {
+        const app = createMcpHonoApp();
+        app.post('/echo', (c: Context) => c.json({ parsed: c.get('parsedBody') ?? null }));
+
+        for (const body of [undefined, '']) {
+            const res = await app.request('http://localhost/echo', {
+                method: 'POST',
+                headers: jsonHeaders,
+                ...(body === undefined ? {} : { body })
+            });
+            expect(res.status).toBe(200);
+            expect(await res.json()).toEqual({ parsed: null });
+        }
+    });
+
+    test('createMcpHonoApp passes bodyless and empty-body requests to createMcpHandler', async () => {
+        const app = createMcpHonoApp();
+        const handler = createMcpHandler(() => new McpServer({ name: 'hono-test', version: '1.0.0' }), { legacy: 'reject' });
+        app.all('/mcp', (c: Context) => handler.fetch(c.req.raw, { parsedBody: c.get('parsedBody') }));
+
+        for (const method of ['GET', 'DELETE']) {
+            const res = await app.request('http://localhost/mcp', { method, headers: jsonHeaders });
+            expect(res.status).toBe(405);
+            expect(res.headers.get('Allow')).toBe('POST');
+            expect(((await res.json()) as { error: { code: number } }).error.code).toBe(-32_000);
+        }
+
+        const empty = await app.request('http://localhost/mcp', { method: 'POST', headers: jsonHeaders });
+        expect(empty.status).toBe(400);
+        expect(((await empty.json()) as { error: { code: number } }).error.code).toBe(-32_700);
     });
 });

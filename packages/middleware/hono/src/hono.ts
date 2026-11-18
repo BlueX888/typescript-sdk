@@ -57,10 +57,16 @@ export interface CreateMcpHonoAppOptions {
  * clone of the request, so the original stream stays readable. Returning only the
  * parsed value keeps the decoded text from outliving the parse.
  */
-async function parseJsonBody(request: Request, maxBytes: number): Promise<{ tooLarge: true } | { tooLarge: false; value: unknown }> {
+async function parseJsonBody(
+    request: Request,
+    maxBytes: number
+): Promise<{ tooLarge: true } | { tooLarge: false; empty: true } | { tooLarge: false; value: unknown }> {
     const body = await readRequestBody(request, maxBytes);
     if (body.tooLarge) {
         return { tooLarge: true };
+    }
+    if (body.text.length === 0) {
+        return { tooLarge: false, empty: true };
     }
     return { tooLarge: false, value: JSON.parse(body.text) };
 }
@@ -76,6 +82,7 @@ async function parseJsonBody(request: Request, maxBytes: number): Promise<{ tooL
  * that stashes the parsed body into `c.set('parsedBody', ...)` when the `Content-Type`
  * media type is `application/json`. It runs after the Host/Origin validation, and JSON
  * bodies over `maxRequestBodySize` (4 MiB by default) are answered `413` before being parsed.
+ * Bodyless methods (`GET`, `HEAD`) and empty bodies are left unparsed for the transport to answer.
  *
  * @param options - Configuration options
  * @returns A configured Hono application
@@ -132,6 +139,12 @@ export function createMcpHonoApp(options: CreateMcpHonoAppOptions = {}): Hono {
             return await next();
         }
 
+        // GET and HEAD have no JSON body to parse; like `toWebRequest`, leave
+        // them to the transport's own method handling.
+        if (c.req.method === 'GET' || c.req.method === 'HEAD') {
+            return await next();
+        }
+
         try {
             // Parse from a clone so we don't consume the original request stream.
             const parsed = await parseJsonBody(c.req.raw.clone(), maxRequestBodySize);
@@ -145,7 +158,11 @@ export function createMcpHonoApp(options: CreateMcpHonoAppOptions = {}): Hono {
                     413
                 );
             }
-            c.set('parsedBody', parsed.value);
+            // An empty body stays unset so the handler answers it as a missing
+            // JSON-RPC message rather than a parse failure.
+            if ('value' in parsed) {
+                c.set('parsedBody', parsed.value);
+            }
         } catch {
             // Mirror express.json() behavior loosely: reject invalid JSON.
             return c.text('Invalid JSON', 400);
